@@ -18,7 +18,6 @@ Usage:
     python weather_forecast.py --city husum       # windy North Sea coast
 """
 import argparse
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -28,6 +27,9 @@ import requests
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
 LOCAL_TZ = "Europe/Berlin"
+# Set once when the module is imported (restart the notebook kernel on a new day)
+today_local = pd.Timestamp.now(tz=LOCAL_TZ).normalize()  # today 00:00 Berlin
+tomorrow_local = today_local + pd.DateOffset(days=1)     # tomorrow 00:00 Berlin
 
 LOCATIONS: dict[str, tuple[float, float]] = {  # name: (latitude, longitude)
     "duesseldorf": (51.2277, 6.7735),
@@ -62,11 +64,12 @@ def fetch_forecast(lat: float, lon: float) -> dict:
         "longitude": lon,
         "minutely_15": ",".join(VARIABLES),
         "past_days": 1,             # yesterday (UTC)
-        "forecast_days": 2,         # today + tomorrow (UTC)
+        "forecast_days": 3,         # today + tomorrow (UTC), plus one extra day to avoid truncation at 23:45 UTC
         "timezone": "GMT",          # keep everything in UTC; we convert at the end
         "timeformat": "unixtime",   # timestamps as seconds since 1970-01-01 UTC
         "wind_speed_unit": "ms",    # m/s instead of the default km/h
     }
+    
     response = requests.get(API_URL, params=params, timeout=15)
     response.raise_for_status()
     return response.json()
@@ -102,9 +105,7 @@ def to_local(df: pd.DataFrame) -> pd.DataFrame:
 def keep_full_days(df: pd.DataFrame) -> pd.DataFrame:
     """Keep only today and tomorrow in Berlin time."""
     day = df.index.normalize()                       # local midnight of each row
-    first = pd.Timestamp.now(tz=LOCAL_TZ).normalize()  # today 00:00
-    last = first + pd.DateOffset(days=1)               # tomorrow 00:00
-    return df[(day >= first) & (day <= last)]
+    return df[(day >= today_local) & (day <= tomorrow_local)]
 
 
 def format_local(index: pd.DatetimeIndex) -> pd.Index:
@@ -124,41 +125,30 @@ def slots_per_day(df: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------
 # 4. Plot
 # --------------------------------------------------------------------------
-BLUE, ORANGE, GREY = "#2a78d6", "#eb6834", "#888780"
-
-
 def plot_forecast(df: pd.DataFrame, city: str, path: Path) -> None:
+    """Three panels (temperature, wind, solar); dashed line = start of tomorrow."""
+    t = df.index.tz_localize(None)   # drop the tz label so matplotlib shows Berlin clock time
+
     fig, axes = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
-    t = df.index
-    midnight = t[0].normalize() + pd.DateOffset(days=1)  # start of tomorrow
 
-    axes[0].plot(t, df["temperature_2m"], color=BLUE, lw=2)
-    axes[0].set_ylabel("Temperature\n(°C)")
+    axes[0].plot(t, df["temperature_2m"])
+    axes[0].set_ylabel("Temperature (°C)")
 
-    axes[1].plot(t, df["wind_speed_120m"], color=BLUE, lw=2, label="120 m (hub height)")
-    axes[1].plot(t, df["wind_speed_10m"], color=ORANGE, lw=2, label="10 m")
-    axes[1].set_ylabel("Wind speed\n(m/s)")
-    axes[1].legend(loc="lower right", bbox_to_anchor=(1, 1), ncol=2, frameon=False)
+    axes[1].plot(t, df["wind_speed_120m"], label="120 m (hub height)")
+    axes[1].plot(t, df["wind_speed_10m"], label="10 m")
+    axes[1].set_ylabel("Wind speed (m/s)")
+    axes[1].legend()
 
-    axes[2].plot(t, df["shortwave_radiation"], color=ORANGE, lw=2)
-    axes[2].set_ylabel("Solar radiation\n(W/m²)")
+    axes[2].plot(t, df["shortwave_radiation"])
+    axes[2].set_ylabel("Solar radiation (W/m²)")
 
     for ax in axes:
-        ax.axvline(midnight, color=GREY, lw=1, ls="--")
-        ax.grid(axis="y", color="#e5e4e0", lw=0.8)
-        ax.spines[["top", "right"]].set_visible(False)
+        ax.axvline(tomorrow_local.tz_localize(None), color="grey", linestyle="--")
 
-    # Label the two market horizons above the top panel
-    top = axes[0].get_xaxis_transform()
-    axes[0].text(t[0], 1.02, "Today (intraday)", transform=top, color=GREY)
-    axes[0].text(midnight, 1.02, "  Tomorrow (day-ahead)", transform=top, color=GREY)
+    axes[2].xaxis.set_major_formatter(mdates.DateFormatter("%d.%m. %H:%M"))
+    axes[2].set_xlabel("Local time (Europe/Berlin)")
 
-    axes[-1].xaxis.set_major_locator(mdates.HourLocator(byhour=[0, 6, 12, 18], tz=t.tz))
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%a %H:%M", tz=t.tz))
-    axes[-1].set_xlabel(f"Local time ({LOCAL_TZ}, CET/CEST), 15-minute resolution")
-
-    fig.suptitle(f"Weather forecast for {city.title()}: today and tomorrow",
-                 fontsize=14, x=0.01, ha="left")
+    fig.suptitle(f"Weather forecast for {city.title()}: today and tomorrow")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -176,32 +166,18 @@ def main() -> None:
     try:
         payload = fetch_forecast(lat, lon)
     except requests.RequestException as err:
-        # Live data only: stop with a short message instead of a long traceback.
-        sys.exit(f"Could not reach Open-Meteo ({type(err).__name__}). Check the connection and try again.")
+        raise SystemExit(f"Could not fetch Open-Meteo ({err})") 
     print("Fetched forecast from Open-Meteo")
 
     df = to_dataframe(payload)   # everything in UTC
-    n_downloaded = len(df)
     df = to_local(df)            # last step: UTC -> Berlin time
     df = keep_full_days(df)      # today + tomorrow as complete Berlin days
-    print(f"Downloaded {n_downloaded} quarter-hours (UTC), "
-          f"kept {len(df)} (today + tomorrow in Berlin time)")
+    print(f"kept {len(df)} data (today + tomorrow in Berlin time)")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
-    df.to_csv(OUTPUT_DIR / f"forecast_{args.city}.csv")
-    plot_forecast(df, args.city, OUTPUT_DIR / f"forecast_{args.city}.png")
-
-    pd.set_option("display.width", 120)
-    pd.set_option("display.max_columns", 10)
-    preview = df[["time_utc", *VARIABLES]].head(4).copy()
-    preview.index = format_local(preview.index)
-    preview["time_utc"] = preview["time_utc"].dt.strftime("%Y-%m-%d %H:%M UTC")
-    print("\nFirst rows (UTC vs local time):")
-    print(preview)
-    print("\n15-minute slots per local day:")
-    print(slots_per_day(df).to_string())
-    print(f"\nPlot and CSV saved to {OUTPUT_DIR}/")
-
+    stem = f"forecast_{args.city}_{today_local:%Y-%m-%d}"   # e.g. forecast_munich_2026-11-17
+    df.to_csv(OUTPUT_DIR / f"{stem}.csv")
+    plot_forecast(df, args.city, OUTPUT_DIR / f"{stem}.png")
 
 if __name__ == "__main__":
     main()
