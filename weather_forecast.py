@@ -78,10 +78,10 @@ def fetch_forecast(lat: float, lon: float) -> dict:
 # --------------------------------------------------------------------------
 # 2. DataFrame in UTC
 # --------------------------------------------------------------------------
-def to_dataframe(payload: dict) -> pd.DataFrame:
+def to_dataframe(dict_weather: dict) -> pd.DataFrame:
     """Turn the 15-minute block into a DataFrame indexed by UTC time."""
-    df = pd.DataFrame(payload["minutely_15"])
-    # Unix seconds -> timezone-aware UTC timestamps
+    df = pd.DataFrame(dict_weather["minutely_15"])
+    # Unix timestamp -> UTC
     df["time_utc"] = pd.to_datetime(df.pop("time"), unit="s", utc=True)
     return df.set_index("time_utc")
 
@@ -159,17 +159,17 @@ def plot_forecast(df: pd.DataFrame, city: str, path: Path) -> None:
 # --------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    parser.add_argument("--city", default="duesseldorf", choices=LOCATIONS)
+    parser.add_argument("--city", default="munich", choices=LOCATIONS)
     args = parser.parse_args()
 
     lat, lon = LOCATIONS[args.city]
     try:
-        payload = fetch_forecast(lat, lon)
+        dict_weather = fetch_forecast(lat, lon)
     except requests.RequestException as err:
         raise SystemExit(f"Could not fetch Open-Meteo ({err})") 
     print("Fetched forecast from Open-Meteo")
 
-    df = to_dataframe(payload)   # everything in UTC
+    df = to_dataframe(dict_weather)   # everything in UTC
     df = to_local(df)            # last step: UTC -> Berlin time
     df = keep_full_days(df)      # today + tomorrow as complete Berlin days
     print(f"kept {len(df)} data (today + tomorrow in Berlin time)")
