@@ -14,7 +14,7 @@ Pipeline (everything stays in UTC until the last step):
     4. Plot temperature, wind speed and solar radiation, and save a CSV.
 
 Usage:
-    python weather_forecast.py                    # Duesseldorf, live API
+    python weather_forecast.py                   
     python weather_forecast.py --city husum       # windy North Sea coast
 """
 import argparse
@@ -106,21 +106,6 @@ def keep_full_days(df: pd.DataFrame) -> pd.DataFrame:
     """Keep only today and tomorrow in Berlin time."""
     day = df.index.normalize()                       # local midnight of each row
     return df[(day >= today_local) & (day <= tomorrow_local)]
-
-
-def format_local(index: pd.DatetimeIndex) -> pd.Index:
-    """Readable local time with the zone name, e.g. '2026-11-16 01:00 CET'.
-
-    %Z prints CET in winter and CEST in summer. Only used for display;
-    calculations keep the timezone-aware timestamps.
-    """
-    return index.strftime("%Y-%m-%d %H:%M %Z")
-
-
-def slots_per_day(df: pd.DataFrame) -> pd.Series:
-    """15-minute slots per local day: 96 normally, 92 or 100 on DST days."""
-    return df.groupby(df.index.date).size()
-
 
 # --------------------------------------------------------------------------
 # 4. Plot
